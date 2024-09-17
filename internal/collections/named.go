@@ -80,7 +80,7 @@ func (c *NamedCollection) Reset() {
 	c.Map.Reset()
 }
 
-func (c *NamedCollection) Names(rv variables.RuleVariable) collection.Collection {
+func (c *NamedCollection) Names(rv variables.RuleVariable) collection.Keyed {
 	return &NamedCollectionNames{
 		variable:   rv,
 		collection: c,
@@ -95,17 +95,34 @@ func (c *NamedCollection) String() string {
 	return fmt.Sprint(c.Map)
 }
 
+func (c *NamedCollection) FindRegex(key *regexp.Regexp) []types.MatchData {
+	var res []types.MatchData
+	res = c.Map.FindRegexKey(key)
+	return res
+}
+
+func (c *NamedCollection) FindString(key string) []types.MatchData {
+	var res []types.MatchData
+	res = c.Map.FindString(key)
+	return res
+}
+
+
 type NamedCollectionNames struct {
 	variable   variables.RuleVariable
 	collection *NamedCollection
 }
 
 func (c *NamedCollectionNames) FindRegex(key *regexp.Regexp) []types.MatchData {
-	panic("selection operator not supported")
+	var res []types.MatchData
+	res = c.collection.Map.FindRegexKey(key)
+	return res
 }
 
 func (c *NamedCollectionNames) FindString(key string) []types.MatchData {
-	panic("selection operator not supported")
+	var res []types.MatchData
+	res = c.collection.Map.FindString(key)
+	return res
 }
 
 func (c *NamedCollectionNames) FindAll() []types.MatchData {
@@ -127,6 +144,11 @@ func (c *NamedCollectionNames) FindAll() []types.MatchData {
 func (c *NamedCollectionNames) Name() string {
 	return c.variable.Name()
 }
+
+func (c *NamedCollectionNames) Get(key string) []string {
+	return c.collection.Map.Get(key)
+}
+
 
 func (c *NamedCollectionNames) String() string {
 	res := strings.Builder{}

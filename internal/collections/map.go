@@ -71,6 +71,27 @@ func (c *Map) FindRegex(key *regexp.Regexp) []types.MatchData {
 	return result
 }
 
+func (c *Map) FindRegexKey(key *regexp.Regexp) []types.MatchData {
+	var result []types.MatchData
+	for k, data := range c.data {
+		if !c.isCaseSensitive {
+			k = strings.ToLower(k)
+		}
+		if key.MatchString(k) {
+			for _, d := range data {
+				result = append(result, &corazarules.MatchData{
+					Variable_: c.variable,
+					Key_:      d.key,
+					Value_:    d.key,
+				})
+			}
+		}
+	}
+	return result
+}
+
+
+
 // FindString returns all map elements whose key matches the string.
 func (c *Map) FindString(key string) []types.MatchData {
 	var result []types.MatchData
