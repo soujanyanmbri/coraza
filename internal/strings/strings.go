@@ -122,11 +122,12 @@ func AsciiToLower(s string) string {
 // starting from the specified index.
 func asciiToLowerInPlace(s string, start int) string {
 	res := []byte(s)
-	res[start] += 'a' - 'A'
+	const asciiDiff = 'a' - 'A'
+	res[start] += asciiDiff
 
 	for i := start + 1; i < len(res); i++ {
 		if res[i] >= 'A' && res[i] <= 'Z' {
-			res[i] += 'a' - 'A'
+			res[i] += asciiDiff
 		}
 	}
 	return WrapUnsafe(res)
