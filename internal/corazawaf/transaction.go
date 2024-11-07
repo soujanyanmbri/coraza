@@ -67,6 +67,7 @@ type Transaction struct {
 	// Copies from the WAF instance that may be overwritten by the ctl action
 	AuditEngine               types.AuditEngineStatus
 	AuditLogParts             types.AuditLogParts
+	AuditLogFormat            string
 	ForceRequestBodyVariable  bool
 	RequestBodyAccess         bool
 	RequestBodyLimit          int64
@@ -279,6 +280,8 @@ func (tx *Transaction) Collection(idx variables.RuleVariable) collection.Collect
 		return tx.variables.xml
 	case variables.MultipartPartHeaders:
 		return tx.variables.multipartPartHeaders
+	case variables.MultipartStrictError:
+		return tx.variables.multipartStrictError
 	}
 
 	return collections.Noop
@@ -586,9 +589,9 @@ func (tx *Transaction) GetField(rv ruleVariableParams) []types.MatchData {
 	}
 
 	// in the most common scenario filteredMatches length will be
-	// the same as matches length, so we avoid allocating per result
-	filteredMatches := make([]types.MatchData, 0, len(matches))
-
+	// the same as matches length, so we avoid allocating per result.
+	// We reuse the matches slice to store filtered results avoiding extra allocation.
+	filteredCount := 0
 	for _, c := range matches {
 		isException := false
 		lkey := strings.ToLower(c.Key())
@@ -599,10 +602,11 @@ func (tx *Transaction) GetField(rv ruleVariableParams) []types.MatchData {
 			}
 		}
 		if !isException {
-			filteredMatches = append(filteredMatches, c)
+			matches[filteredCount] = c
+			filteredCount++
 		}
 	}
-	matches = filteredMatches
+	matches = matches[:filteredCount]
 
 	if rv.Count {
 		count := len(matches)
@@ -968,9 +972,9 @@ func (tx *Transaction) ReadRequestBodyFrom(r io.Reader) (*types.Interruption, in
 
 // ProcessRequestBody Performs the analysis of the request body (if any)
 //
-// This method perform the analysis on the request body. It is optional to
-// call that function. If this API consumer already knows that there isn't a
-// body for inspect it is recommended to skip this step.
+// It is recommended to call this method even if it is not expected to have a body.
+// It permits to execute rules belonging to request body phase, but not necesarily
+// processing the request body.
 //
 // Remember to check for a possible intervention.
 func (tx *Transaction) ProcessRequestBody() (*types.Interruption, error) {
@@ -984,11 +988,15 @@ func (tx *Transaction) ProcessRequestBody() (*types.Interruption, error) {
 	}
 
 	if tx.lastPhase != types.PhaseRequestHeaders {
-		if tx.lastPhase >= types.PhaseRequestBody {
-			// Phase already evaluated or skipped
-			tx.debugLogger.Warn().Msg("ProcessRequestBody should have already been called")
-		} else {
-			tx.debugLogger.Debug().Msg("Skipping request body processing, anomalous call before request headers evaluation")
+		switch {
+		case tx.lastPhase == types.PhaseRequestBody:
+			// This condition can happen quite often when ProcessPartial is used as the write body functions call ProcessRequestBody when
+			// the limit is reached
+			tx.debugLogger.Debug().Msg("Request body processing has been already performed")
+		case tx.lastPhase > types.PhaseRequestBody:
+			tx.debugLogger.Warn().Msg("Skipping anomalous call to ProcessRequestBody. It should have already been called")
+		default:
+			tx.debugLogger.Warn().Msg("Skipping anomalous call to ProcessRequestBody. It has been called before request headers evaluation")
 		}
 		return nil, nil
 	}
@@ -1050,12 +1058,12 @@ func (tx *Transaction) ProcessRequestBody() (*types.Interruption, error) {
 	return tx.interruption, nil
 }
 
-// ProcessResponseHeaders Perform the analysis on the response readers.
+// ProcessResponseHeaders performs the analysis on the response headers.
 //
-// This method perform the analysis on the response headers, notice however
+// This method performs the analysis on the response headers. Note, however,
 // that the headers should be added prior to the execution of this function.
 //
-// note: Remember to check for a possible intervention.
+// Note: Remember to check for a possible intervention.
 func (tx *Transaction) ProcessResponseHeaders(code int, proto string) *types.Interruption {
 	if tx.RuleEngine == types.RuleEngineOff {
 		return nil
@@ -1214,9 +1222,9 @@ func (tx *Transaction) ReadResponseBodyFrom(r io.Reader) (*types.Interruption, i
 
 // ProcessResponseBody Perform the analysis of the the response body (if any)
 //
-// This method perform the analysis on the response body. It is optional to
-// call that method. If this API consumer already knows that there isn't a
-// body for inspect it is recommended to skip this step.
+// It is recommended to call this method even if it is not expected to have a body.
+// It permits to execute rules belonging to request body phase, but not necesarily
+// processing the response body.
 //
 // note Remember to check for a possible intervention.
 func (tx *Transaction) ProcessResponseBody() (*types.Interruption, error) {
@@ -1230,14 +1238,18 @@ func (tx *Transaction) ProcessResponseBody() (*types.Interruption, error) {
 	}
 
 	if tx.lastPhase != types.PhaseResponseHeaders {
-		if tx.lastPhase >= types.PhaseResponseBody {
-			// Phase already evaluated or skipped
-			tx.debugLogger.Warn().Msg("ProcessResponseBody should have already been called")
-		} else {
+		switch {
+		case tx.lastPhase == types.PhaseResponseBody:
+			// This condition can happen quite often when ProcessPartial is used as the write body functions call ProcessResponseBody when
+			// the limit is reached
+			tx.debugLogger.Debug().Msg("Response body processing has been already performed")
+		case tx.lastPhase > types.PhaseResponseBody:
+			tx.debugLogger.Warn().Msg("Skipping anomalous call to ProcessResponseBody. It should have already been called")
+		default:
 			// Prevents evaluating response body rules if last phase has not been response headers. It may happen
 			// when a server returns an error prior to evaluating WAF rules, but ResponseBody is still called at
 			// the end of http stream
-			tx.debugLogger.Debug().Msg("Skipping response body processing, anomalous call before response headers evaluation")
+			tx.debugLogger.Warn().Msg("Skipping anomalous call to ProcessResponseBody. It has been called before response headers evaluation")
 		}
 		return nil, nil
 	}
@@ -1374,6 +1386,18 @@ func (tx *Transaction) AuditLog() *auditlog.Log {
 
 	clientPort, _ := strconv.Atoi(tx.variables.remotePort.Get())
 	hostPort, _ := strconv.Atoi(tx.variables.serverPort.Get())
+
+	// Convert the transaction fullRequestLength to Int32
+	requestLength, err := strconv.ParseInt(tx.variables.fullRequestLength.Get(), 10, 32)
+	if err != nil {
+		requestLength = 0
+		tx.DebugLogger().Error().
+			Str("transaction", "AuditLog").
+			Str("value", tx.variables.fullRequestLength.Get()).
+			Err(err).
+			Msg("Error converting request length to integer")
+	}
+
 	// YYYY/MM/DD HH:mm:ss
 	ts := time.Unix(0, tx.Timestamp).Format("2006/01/02 15:04:05")
 	al.Transaction_ = auditlog.Transaction{
@@ -1389,7 +1413,10 @@ func (tx *Transaction) AuditLog() *auditlog.Log {
 			Method_:   tx.variables.requestMethod.Get(),
 			URI_:      tx.variables.requestURI.Get(),
 			Protocol_: tx.variables.requestProtocol.Get(),
+			Args_:     tx.variables.args,
+			Length_:   int32(requestLength),
 		},
+		IsInterrupted_: tx.IsInterrupted(),
 	}
 
 	for _, part := range tx.AuditLogParts {
