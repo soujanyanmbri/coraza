@@ -111,6 +111,11 @@ func WrapUnsafe(buf []byte) string {
 // without allocating additional memory, unlike strings.ToLower.
 func AsciiToLower(s string) string {
 	for i := 0; i < len(s); i++ {
+		// Check if the letter is unicode, In that case, just do a strings.ToLower
+		if s[i] >= 128 {
+			// Use strings.ToLower for non-ASCII strings
+			return strings.ToLower(s)
+		}
 		if s[i] >= 'A' && s[i] <= 'Z' {
 			return asciiToLowerInPlace(s, i)
 		}

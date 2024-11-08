@@ -104,7 +104,7 @@ func TestAsciiToLower(t *testing.T) {
 		{"No Letters to Convert", "1234!@#$", "1234!@#$"},                   // Non-alphabetic characters
 		{"Mixed Case", "GoLang", "golang"},                                  // Mixed case
 		{"Leading and Trailing Spaces", "    SPACES    ", "    spaces    "}, // Leading/trailing spaces
-		{"Unicode Unchanged", "Привет Мир", "Привет Мир"},                   // Unicode characters remain unchanged
+		{"Unicode Changed now", "Привет Мир", "привет мир"},                 // Unicode characters remain unchanged
 		{"Mixed with Emojis", "😀😃😄😁🤣 Emoji TEST", "😀😃😄😁🤣 emoji test"},       // Emojis with mixed case text
 	}
 
@@ -116,6 +116,8 @@ func TestAsciiToLower(t *testing.T) {
 		})
 	}
 }
+
+// Basic test to check
 
 func BenchmarkAsciiVsUnicodeCaseString(b *testing.B) {
 	benchmarkCases := []struct {
