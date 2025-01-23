@@ -5,7 +5,10 @@ package corazawaf
 
 import (
 	"fmt"
+	"hash/fnv"
 	"regexp"
+	"strconv"
+	"strings"
 	"sync"
 	"unsafe"
 
@@ -14,7 +17,6 @@ import (
 	"github.com/corazawaf/coraza/v3/experimental/plugins/plugintypes"
 	"github.com/corazawaf/coraza/v3/internal/corazarules"
 	"github.com/corazawaf/coraza/v3/internal/memoize"
-	stringsutil "github.com/corazawaf/coraza/v3/internal/strings"
 	"github.com/corazawaf/coraza/v3/types"
 	"github.com/corazawaf/coraza/v3/types/variables"
 )
@@ -242,8 +244,17 @@ func (r *Rule) doEvaluate(logger debuglog.Logger, phase types.RulePhase, tx *Tra
 			}
 			vLog.Debug().Msg("Expanding arguments for rule")
 
+			args := make([]string, 1)
+			var errs []error
+			var argsLen int
 			for i, arg := range values {
-				args, errs := r.transformArg(arg, i, cache)
+				if r.MultiMatch {
+					args, errs = r.transformMultiMatchArg(arg)
+					argsLen = len(args)
+				} else {
+					args[0], errs = r.transformArg(arg, i, cache)
+					argsLen = 1
+				}
 				if len(errs) > 0 {
 					vWarnLog := vLog.Warn()
 					if vWarnLog.IsEnabled() {
@@ -255,7 +266,7 @@ func (r *Rule) doEvaluate(logger debuglog.Logger, phase types.RulePhase, tx *Tra
 				}
 
 				// args represents the transformed variables
-				for _, carg := range args {
+				for _, carg := range args[:argsLen] {
 					evalLog := vLog.
 						Debug().
 						Str("operator_function", r.operator.Function).
@@ -381,42 +392,41 @@ func (r *Rule) doEvaluate(logger debuglog.Logger, phase types.RulePhase, tx *Tra
 	return matchedValues
 }
 
-func (r *Rule) transformArg(arg types.MatchData, argIdx int, cache map[transformationKey]*transformationValue) ([]string, []error) {
-	if r.MultiMatch {
-		// TODOs:
-		// - We don't need to run every transformation. We could try for each until found
-		// - Cache is not used for multimatch
-		return r.executeTransformationsMultimatch(arg.Value())
-	} else {
-		switch {
-		case len(r.transformations) == 0:
-			return []string{arg.Value()}, nil
-		case arg.Variable().Name() == "TX":
-			// no cache for TX
-			arg, errs := r.executeTransformations(arg.Value())
-			return []string{arg}, errs
-		default:
-			// NOTE: See comment on transformationKey struct to understand this hacky code
-			argKey := arg.Key()
-			argKeyPtr := unsafe.StringData(argKey)
-			key := transformationKey{
-				argKey:            argKeyPtr,
-				argIndex:          argIdx,
-				argVariable:       arg.Variable(),
-				transformationsID: r.transformationsID,
+func (r *Rule) transformMultiMatchArg(arg types.MatchData) ([]string, []error) {
+	// TODOs:
+	// - We don't need to run every transformation. We could try for each until found
+	// - Cache is not used for multimatch
+	return r.executeTransformationsMultimatch(arg.Value())
+}
+
+func (r *Rule) transformArg(arg types.MatchData, argIdx int, cache map[transformationKey]*transformationValue) (string, []error) {
+	switch {
+	case len(r.transformations) == 0:
+		return arg.Value(), nil
+	case arg.Variable().Name() == "TX":
+		// no cache for TX
+		arg, errs := r.executeTransformations(arg.Value())
+		return arg, errs
+	default:
+		// NOTE: See comment on transformationKey struct to understand this hacky code
+		argKey := arg.Key()
+		argKeyPtr := unsafe.StringData(argKey)
+		key := transformationKey{
+			argKey:            argKeyPtr,
+			argIndex:          argIdx,
+			argVariable:       arg.Variable(),
+			transformationsID: r.transformationsID,
+		}
+		if cached, ok := cache[key]; ok {
+			return cached.arg, cached.errs
+		} else {
+			ars, es := r.executeTransformations(arg.Value())
+			errs := es
+			cache[key] = &transformationValue{
+				arg:  ars,
+				errs: es,
 			}
-			if cached, ok := cache[key]; ok {
-				return cached.args, cached.errs
-			} else {
-				ars, es := r.executeTransformations(arg.Value())
-				args := []string{ars}
-				errs := es
-				cache[key] = &transformationValue{
-					args: args,
-					errs: es,
-				}
-				return args, errs
-			}
+			return ars, errs
 		}
 	}
 }
@@ -486,7 +496,7 @@ func caseSensitiveVariable(v variables.RuleVariable) bool {
 // but the knowledge of the type of the Map it not here also, so let's start with this.
 func newRuleVariableParams(v variables.RuleVariable, key string, re *regexp.Regexp, iscount bool) ruleVariableParams {
 	if !caseSensitiveVariable(v) {
-		key = stringsutil.AsciiToLower(key)
+		key = strings.ToLower(key)
 	}
 	return ruleVariableParams{
 		Count:      iscount,
@@ -577,23 +587,14 @@ func (r *Rule) AddVariableNegation(v variables.RuleVariable, key string) error {
 	return nil
 }
 
-var transformationIDToName = []string{""}
-var transformationNameToID = map[string]int{"": 0}
-var transformationIDsLock = sync.Mutex{}
+var transformationNameToID sync.Map
 
 func transformationID(currentID int, transformationName string) int {
-	transformationIDsLock.Lock()
-	defer transformationIDsLock.Unlock()
-
-	currName := transformationIDToName[currentID]
-	nextName := fmt.Sprintf("%s+%s", currName, transformationName)
-	if id, ok := transformationNameToID[nextName]; ok {
-		return id
-	}
-
-	id := len(transformationIDToName)
-	transformationIDToName = append(transformationIDToName, nextName)
-	transformationNameToID[nextName] = id
+	nextName := strconv.Itoa(currentID) + "+" + transformationName
+	hasher := fnv.New64a()
+	hasher.Write([]byte(nextName))
+	id := int(hasher.Sum64())
+	transformationNameToID.LoadOrStore(id, nextName)
 	return id
 }
 
