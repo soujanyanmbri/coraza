@@ -9,6 +9,7 @@ import (
 
 	"github.com/corazawaf/coraza/v3/collection"
 	"github.com/corazawaf/coraza/v3/internal/corazarules"
+	stringsutil "github.com/corazawaf/coraza/v3/internal/strings"
 	"github.com/corazawaf/coraza/v3/types"
 	"github.com/corazawaf/coraza/v3/types/variables"
 )
@@ -45,7 +46,7 @@ func (c *Map) Get(key string) []string {
 		return nil
 	}
 	if !c.isCaseSensitive {
-		key = strings.ToLower(key)
+		key = stringsutil.AsciiToLower(key)
 	}
 	values := c.data[key]
 	if len(values) == 0 {
@@ -85,7 +86,7 @@ func (c *Map) FindString(key string) []types.MatchData {
 		return nil
 	}
 	if !c.isCaseSensitive {
-		key = strings.ToLower(key)
+		key = stringsutil.AsciiToLower(key)
 	}
 	// if key is not empty
 	if e, ok := c.data[key]; ok {
@@ -119,7 +120,7 @@ func (c *Map) FindAll() []types.MatchData {
 func (c *Map) Add(key string, value string) {
 	aVal := keyValue{key: key, value: value}
 	if !c.isCaseSensitive {
-		key = strings.ToLower(key)
+		key = stringsutil.AsciiToLower(key)
 	}
 	c.data[key] = append(c.data[key], aVal)
 }
@@ -128,7 +129,7 @@ func (c *Map) Add(key string, value string) {
 func (c *Map) Set(key string, values []string) {
 	originalKey := key
 	if !c.isCaseSensitive {
-		key = strings.ToLower(key)
+		key = stringsutil.AsciiToLower(key)
 	}
 	dataSlice, exists := c.data[key]
 	if !exists || cap(dataSlice) < len(values) {
@@ -146,7 +147,7 @@ func (c *Map) Set(key string, values []string) {
 func (c *Map) SetIndex(key string, index int, value string) {
 	originalKey := key
 	if !c.isCaseSensitive {
-		key = strings.ToLower(key)
+		key = stringsutil.AsciiToLower(key)
 	}
 	values := c.data[key]
 	av := keyValue{key: originalKey, value: value}
@@ -164,7 +165,7 @@ func (c *Map) SetIndex(key string, index int, value string) {
 // Remove removes a key/value from the map.
 func (c *Map) Remove(key string) {
 	if !c.isCaseSensitive {
-		key = strings.ToLower(key)
+		key = stringsutil.AsciiToLower(key)
 	}
 	if len(c.data) == 0 {
 		return

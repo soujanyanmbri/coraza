@@ -6,11 +6,11 @@ package seclang
 import (
 	"os"
 	"regexp"
-	"strings"
 	"testing"
 
 	"github.com/corazawaf/coraza/v3/internal/corazawaf"
 	"github.com/corazawaf/coraza/v3/internal/environment"
+	stringsutil "github.com/corazawaf/coraza/v3/internal/strings"
 	"github.com/corazawaf/coraza/v3/types"
 )
 
@@ -322,7 +322,7 @@ func TestDirectives(t *testing.T) {
 	for name, dCases := range directiveCases {
 		t.Run(name, func(t *testing.T) {
 			for _, tCase := range dCases {
-				d := directivesMap[strings.ToLower(name)]
+				d := directivesMap[stringsutil.AsciiToLower(name)]
 
 				t.Run(tCase.opts, func(t *testing.T) {
 					waf := corazawaf.NewWAF()
