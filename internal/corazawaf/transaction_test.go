@@ -490,6 +490,89 @@ func TestAuditLog(t *testing.T) {
 	}
 }
 
+func TestAuditLogPartJWithMultipartFiles(t *testing.T) {
+	tx := makeTransactionMultipart(t)
+	tx.AuditLogParts = types.AuditLogParts("AJZ")
+	_, err := tx.ProcessRequestBody()
+	if err != nil {
+		t.Fatal(err)
+	}
+	al := tx.AuditLog()
+
+	if !al.Transaction().HasRequest() {
+		t.Fatal("expected request in audit log")
+	}
+
+	files := al.Transaction().Request().Files()
+	if len(files) != 2 {
+		t.Fatalf("expected 2 files, got %d", len(files))
+	}
+
+	// Files come from the multipart body: a.txt and a.html
+	names := map[string]bool{}
+	for _, f := range files {
+		names[f.Name()] = true
+		if f.Size() == 0 {
+			t.Errorf("file %s has size 0", f.Name())
+		}
+	}
+	if !names["a.txt"] {
+		t.Error("missing file a.txt")
+	}
+	if !names["a.html"] {
+		t.Error("missing file a.html")
+	}
+
+	if err := tx.Close(); err != nil {
+		t.Fatalf("Failed to close transaction: %s", err.Error())
+	}
+}
+
+func TestAuditLogPartJWithoutFiles(t *testing.T) {
+	tx := makeTransaction(t)
+	tx.AuditLogParts = types.AuditLogParts("AJZ")
+	al := tx.AuditLog()
+
+	if !al.Transaction().HasRequest() {
+		t.Fatal("expected request in audit log")
+	}
+
+	files := al.Transaction().Request().Files()
+	if len(files) != 0 {
+		t.Fatalf("expected 0 files, got %d", len(files))
+	}
+
+	if err := tx.Close(); err != nil {
+		t.Fatalf("Failed to close transaction: %s", err.Error())
+	}
+}
+
+func TestAuditLogPartJFileSizeParseError(t *testing.T) {
+	tx := makeTransaction(t)
+	tx.AuditLogParts = types.AuditLogParts("AJZ")
+
+	// Manually inject a file with an unparseable size
+	tx.variables.files.Add("", "bad_size.bin")
+	tx.variables.filesSizes.SetIndex("bad_size.bin", 0, "not_a_number")
+
+	al := tx.AuditLog()
+	files := al.Transaction().Request().Files()
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(files))
+	}
+	if files[0].Name() != "bad_size.bin" {
+		t.Errorf("expected file name bad_size.bin, got %s", files[0].Name())
+	}
+	// Size should default to 0 on parse error
+	if files[0].Size() != 0 {
+		t.Errorf("expected size 0 on parse error, got %d", files[0].Size())
+	}
+
+	if err := tx.Close(); err != nil {
+		t.Fatalf("Failed to close transaction: %s", err.Error())
+	}
+}
+
 var responseBodyWriters = map[string]func(tx *Transaction, body string) (*types.Interruption, int, error){
 	"WriteResponseBody": func(tx *Transaction, body string) (*types.Interruption, int, error) {
 		return tx.WriteResponseBody([]byte(body))
@@ -1440,6 +1523,40 @@ func TestTxPhase4Magic(t *testing.T) {
 	}
 	if tx.variables.responseBody.Get() != "mor" {
 		t.Fatal("failed to set response body")
+	}
+}
+
+func TestCollectionReturnsExpectedTypes(t *testing.T) {
+	waf := NewWAF()
+	tx := waf.NewTransaction()
+	defer tx.Close()
+
+	// Dynamically iterate over all possible RuleVariable values so this test
+	// stays in sync when new variables are added.
+	for i := range 256 {
+		v := variables.RuleVariable(i)
+		name := v.Name()
+
+		if name == "UNKNOWN" || name == "INVALID_VARIABLE" {
+			continue
+		}
+
+		c := tx.Collection(v)
+
+		// JSON is explicitly unimplemented (returns nil).
+		if v == variables.JSON {
+			if c != nil {
+				t.Errorf("Collection(%s) should return nil, got %v", name, c)
+			}
+			continue
+		}
+
+		// Variables that exist in the variables package but are not backed by
+		// a collection in Transaction.Collection() fall through to the default
+		// Noop case. We just verify they don't panic.
+		if c == nil {
+			t.Errorf("Collection(%s) returned nil, expected non-nil collection", name)
+		}
 	}
 }
 

@@ -8,6 +8,7 @@ package operators
 import (
 	"fmt"
 	"regexp"
+	"regexp/syntax"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -41,18 +42,22 @@ import (
 // SecRule REQUEST_URI "@rx ^/api/v(\d+)" "id:182,setvar:tx.api_version=%{TX.1}"
 // ```
 type rx struct {
-	re        *regexp.Regexp
-	minLen    int
-	prefilter func(string) bool // returns true if regex might match; nil = no prefilter
+	re           *regexp.Regexp
+	minLen       int
+	prefilter    func(string) bool // returns true if regex might match; nil = no prefilter
+	exactMatch   string            // non-empty: pattern is ^literal$; skip NFA entirely
+	exactMatchCI bool              // true when exactMatch uses case-insensitive comparison
 }
 
 // rxCompiled holds all compile-time artifacts for a regex pattern so they can
 // be computed once and shared via memoize when the same pattern appears in
 // multiple rules.
 type rxCompiled struct {
-	re        *regexp.Regexp
-	minLen    int
-	prefilter func(string) bool
+	re           *regexp.Regexp
+	minLen       int
+	prefilter    func(string) bool
+	exactMatch   string
+	exactMatchCI bool
 }
 
 var _ plugintypes.Operator = (*rx)(nil)
@@ -82,35 +87,65 @@ func newRX(options plugintypes.OperatorOptions) (plugintypes.Operator, error) {
 	// Compile regex + prefilter together so memoize caches all artifacts as one
 	// unit. This avoids re-parsing the AST for minMatchLength/prefilterFunc when
 	// the same pattern appears in multiple rules.
-	compiled, err := memoizeDo(options.Memoizer, data, func() (any, error) {
+	//
+	// The prefilter flag is part of the key because the global cache is shared
+	// across all WAF instances: two WAFs with different SecRxPreFilter settings
+	// must not share a compiled artifact.
+	cacheKey := fmt.Sprintf("rx:%v:%s", options.RxPreFilterEnabled, data)
+	compiled, err := memoizeDo(options.Memoizer, cacheKey, func() (any, error) {
 		re, err := regexp.Compile(data)
 		if err != nil {
 			return nil, err
 		}
-		return &rxCompiled{
-			re:        re,
-			minLen:    minMatchLength(data),
-			prefilter: prefilterFunc(data),
-		}, nil
+		c := &rxCompiled{re: re}
+		if options.RxPreFilterEnabled {
+			c.minLen = minMatchLength(data)
+			c.prefilter = prefilterFunc(data)
+			// Gap 2: detect pure ^literal$ patterns and bypass the NFA entirely.
+			// Parse options.Arguments (the original, un-wrapped pattern) so that
+			// ^ is OpBeginText and $ is OpEndText — without the (?m) flag that
+			// newRX prepends, which would convert them to OpBeginLine/OpEndLine
+			// and make position-0 reasoning unsound.
+			if origParsed, err2 := syntax.Parse(options.Arguments, syntax.Perl); err2 == nil {
+				if lit, ci := extractExactMatch(origParsed.Simplify()); lit != "" {
+					c.exactMatch = lit
+					c.exactMatchCI = ci
+				}
+			}
+		}
+		return c, nil
 	})
 	if err != nil {
 		return nil, err
 	}
 	c := compiled.(*rxCompiled)
 	return &rx{
-		re:        c.re,
-		minLen:    c.minLen,
-		prefilter: c.prefilter,
+		re:           c.re,
+		minLen:       c.minLen,
+		prefilter:    c.prefilter,
+		exactMatch:   c.exactMatch,
+		exactMatchCI: c.exactMatchCI,
 	}, nil
 }
 
 func (o *rx) Evaluate(tx plugintypes.TransactionState, value string) bool {
+	// Prefiltering evaluation is performed here, skipping regex evaluation for clearly non-matching inputs.
 	if len(value) < o.minLen {
 		return false
 	}
 	if o.prefilter != nil && !o.prefilter(value) {
 		return false
 	}
+	// Gap 2: exact-match bypass for patterns like ^Upload$ — skip the NFA entirely.
+	// The \n guard protects against multi-line inputs where (?m)$ matches
+	// before a newline (e.g. "Upload\nmore" would satisfy (?sm)^Upload$).
+	if o.exactMatch != "" && !strings.ContainsRune(value, '\n') {
+		if o.exactMatchCI {
+			return strings.EqualFold(value, o.exactMatch)
+		}
+		return value == o.exactMatch
+	}
+
 	if tx.Capturing() {
 		// FindStringSubmatchIndex returns a slice of index pairs [start0, end0, start1, end1, ...]
 		// instead of allocating new strings for each capture group. We then slice the original
